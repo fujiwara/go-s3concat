@@ -110,9 +110,9 @@ func ConcatWithContext(ctx context.Context, sess *session.Session, srcs []string
 		partNumber: 0,
 	}
 	if totalSize >= MultipartThreshold {
-		return c.Multipart(ctx, list, dstObj)
+		return c.multipart(ctx, list, dstObj)
 	} else {
-		return c.Upload(ctx, list, dstObj)
+		return c.getAndPut(ctx, list, dstObj)
 	}
 }
 
@@ -148,7 +148,7 @@ func listObjects(ctx context.Context, svc *s3.S3, o *S3Object) ([]*S3Object, int
 	return objs, totalSize, nil
 }
 
-func (c *Concatenator) Upload(ctx context.Context, src []*S3Object, dest *S3Object) error {
+func (c *Concatenator) getAndPut(ctx context.Context, src []*S3Object, dest *S3Object) error {
 	var size int64
 	logger.Printf("[info] starting concat %v to %s by get and put", src, dest)
 	for _, obj := range src {
@@ -183,7 +183,7 @@ func (c *Concatenator) updateParts(etag string) error {
 	return nil
 }
 
-func (c *Concatenator) Multipart(ctx context.Context, src []*S3Object, dest *S3Object) error {
+func (c *Concatenator) multipart(ctx context.Context, src []*S3Object, dest *S3Object) error {
 	logger.Printf("[info] starting concat %v to %s by multipart upload", src, dest)
 	mpu, err := c.svc.CreateMultipartUploadWithContext(
 		ctx,
