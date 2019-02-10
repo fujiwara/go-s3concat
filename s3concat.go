@@ -180,7 +180,6 @@ func (c *Concatenator) Multipart(ctx context.Context, src []*S3Object, dest *S3O
 	c.uploadID = *mpu.UploadId
 	log.Printf("[info] begin multipart upload id %s", c.uploadID)
 
-	parts := make([]*s3.CompletedPart, 0, len(src))
 	var currentPart []byte
 	var uploadsErr error
 UPLOADS:
@@ -266,8 +265,8 @@ UPLOADS:
 	// sort parts by part number
 	// If those are not sorted,
 	// > InvalidPartOrder: The list of parts was not in ascending order. Parts must be ordered by part number.
-	sort.Slice(parts, func(i, j int) bool {
-		return *parts[i].PartNumber < *parts[j].PartNumber
+	sort.Slice(c.parts, func(i, j int) bool {
+		return *c.parts[i].PartNumber < *c.parts[j].PartNumber
 	})
 
 	log.Printf("[info] complete multipart upload id %s", *mpu.UploadId)
@@ -276,7 +275,7 @@ UPLOADS:
 		&s3.CompleteMultipartUploadInput{
 			Bucket:          aws.String(dest.Bucket),
 			Key:             aws.String(dest.Key),
-			MultipartUpload: &s3.CompletedMultipartUpload{Parts: parts},
+			MultipartUpload: &s3.CompletedMultipartUpload{Parts: c.parts},
 			UploadId:        aws.String(c.uploadID),
 		},
 	)
