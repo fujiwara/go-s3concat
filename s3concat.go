@@ -334,5 +334,6 @@ func getObjectContent(ctx context.Context, svc *s3.S3, obj *S3Object, start, end
 	if err != nil {
 		return nil, err
 	}
+	defer res.Body.Close()
 	return ioutil.ReadAll(res.Body) // at most 5MB
 }
