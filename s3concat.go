@@ -7,12 +7,14 @@ import (
 	"io/ioutil"
 	"log"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/hashicorp/logutils"
 	"github.com/pkg/errors"
 )
 
@@ -20,6 +22,8 @@ const (
 	MaxObjects         = 1000
 	MultipartThreshold = 5 * 1024 * 1024 // 5MB
 )
+
+var logger = log.New(os.Stderr, "", log.Ldate|log.Lmicroseconds|log.Lshortfile)
 
 type S3Object struct {
 	Bucket string
@@ -52,6 +56,19 @@ type Concatenator struct {
 	parts      []*s3.CompletedPart
 }
 
+func init() {
+	level := os.Getenv("S3CONCAT_LOG_LEVEL")
+	if level == "" {
+		level = "warn"
+	}
+	filter := &logutils.LevelFilter{
+		Levels:   []logutils.LogLevel{"debug", "info", "warn", "error"},
+		MinLevel: logutils.LogLevel(level),
+		Writer:   os.Stderr,
+	}
+	logger.SetOutput(filter)
+}
+
 func Concat(sess *session.Session, srcs []string, dst string) error {
 	return ConcatWithContext(context.Background(), sess, srcs, dst)
 }
@@ -80,7 +97,7 @@ func ConcatWithContext(ctx context.Context, sess *session.Session, srcs []string
 		if len(ls) == 0 {
 			return fmt.Errorf("object not found at %s", srcObject)
 		}
-		log.Printf("[debug] %d objects %d bytes at %s", len(ls), size, srcObject)
+		logger.Printf("[debug] %d objects %d bytes at %s", len(ls), size, srcObject)
 		list = append(list, ls...)
 		totalSize += size
 	}
@@ -100,7 +117,7 @@ func ConcatWithContext(ctx context.Context, sess *session.Session, srcs []string
 }
 
 func listObjects(ctx context.Context, svc *s3.S3, o *S3Object) ([]*S3Object, int64, error) {
-	log.Printf("[debug] listObjects %s", o)
+	logger.Printf("[debug] listObjects %s", o)
 	res, err := svc.ListObjectsWithContext(
 		ctx,
 		&s3.ListObjectsInput{
@@ -124,14 +141,14 @@ func listObjects(ctx context.Context, svc *s3.S3, o *S3Object) ([]*S3Object, int
 			Key:    *c.Key,
 			Size:   *c.Size,
 		}
-		log.Printf("[debug] found object %s %d bytes", so, so.Size)
+		logger.Printf("[debug] found object %s %d bytes", so, so.Size)
 		objs = append(objs, so)
 		totalSize += *c.Size
 	}
 	return objs, totalSize, nil
 }
 
-func (c *Concatenator) Upload(ctx context.Context, src []*S3Object, dst *S3Object) error {
+func (c *Concatenator) Upload(ctx context.Context, src []*S3Object, dest *S3Object) error {
 	var size int64
 	for _, obj := range src {
 		size += obj.Size
@@ -144,12 +161,12 @@ func (c *Concatenator) Upload(ctx context.Context, src []*S3Object, dst *S3Objec
 		}
 		content = append(content, part...)
 	}
-	log.Printf("[info] putObject %d bytes -> %s", len(content), dst)
+	logger.Printf("[info] putObject: %s size: %d", dest, len(content))
 	_, err := c.svc.PutObjectWithContext(
 		ctx,
 		&s3.PutObjectInput{
-			Bucket: aws.String(dst.Bucket),
-			Key:    aws.String(dst.Key),
+			Bucket: aws.String(dest.Bucket),
+			Key:    aws.String(dest.Key),
 			Body:   bytes.NewReader(content),
 		},
 	)
@@ -161,12 +178,12 @@ func (c *Concatenator) updateParts(etag string) error {
 		ETag:       aws.String(etag),
 		PartNumber: aws.Int64(c.partNumber),
 	})
-	log.Printf("[debug] num: %d, ETag: %s", c.partNumber, etag)
+	logger.Printf("[debug] num: %d, ETag: %s", c.partNumber, etag)
 	return nil
 }
 
 func (c *Concatenator) Multipart(ctx context.Context, src []*S3Object, dest *S3Object) error {
-	log.Printf("[debug] starting multipart upload to %s", dest)
+	logger.Printf("[debug] starting multipart upload to %s", dest)
 	mpu, err := c.svc.CreateMultipartUploadWithContext(
 		ctx,
 		&s3.CreateMultipartUploadInput{
@@ -178,13 +195,13 @@ func (c *Concatenator) Multipart(ctx context.Context, src []*S3Object, dest *S3O
 		return err
 	}
 	c.uploadID = *mpu.UploadId
-	log.Printf("[info] begin multipart upload id %s", c.uploadID)
+	logger.Printf("[info] begin multipart upload: %s id: %s", dest, c.uploadID)
 
 	var currentPart []byte
 	var uploadsErr error
 UPLOADS:
 	for i, obj := range src {
-		log.Printf("[debug] currentPart %d bytes", len(currentPart))
+		logger.Printf("[debug] currentPart %d bytes", len(currentPart))
 		if len(currentPart) == 0 && (obj.Size >= MultipartThreshold || i == len(src)-1) {
 			// single object > 5MB or last part
 			if err := c.uploadPartCopy(ctx, obj, dest, 0, obj.Size-1); err != nil {
@@ -197,7 +214,7 @@ UPLOADS:
 		restSize := int64(MultipartThreshold - len(currentPart))
 		if obj.Size <= restSize || obj.Size-restSize < MultipartThreshold {
 			// whole of object
-			log.Printf("[debug] whole obj.Size=%d, restSize=%d", obj.Size, restSize)
+			logger.Printf("[debug] whole obj.Size=%d, restSize=%d", obj.Size, restSize)
 			content, err := c.getObjectContent(ctx, obj, 0, obj.Size-1)
 			if err != nil {
 				uploadsErr = err
@@ -215,7 +232,7 @@ UPLOADS:
 		}
 
 		// overflow, object head
-		log.Printf("[debug] overflow get head obj.Size=%d, restSize=%d", obj.Size, restSize)
+		logger.Printf("[debug] overflow get head obj.Size=%d, restSize=%d", obj.Size, restSize)
 		content, err := c.getObjectContent(ctx, obj, 0, restSize-1)
 		if err != nil {
 			uploadsErr = err
@@ -232,7 +249,7 @@ UPLOADS:
 		currentPart = currentPart[0:0] // reset
 
 		// object tail (must be larger than MultipartThreshold)
-		log.Println("[debug] overflow tail")
+		logger.Println("[debug] overflow tail")
 		if err := c.uploadPartCopy(ctx, obj, dest, restSize, obj.Size-1); err != nil {
 			uploadsErr = err
 			break UPLOADS
@@ -247,7 +264,7 @@ UPLOADS:
 	}
 
 	if uploadsErr != nil {
-		log.Printf("[error] %s abort multipart upload", uploadsErr)
+		logger.Printf("[error] %s abort multipart upload", uploadsErr)
 		_, err := c.svc.AbortMultipartUploadWithContext(
 			ctx,
 			&s3.AbortMultipartUploadInput{
@@ -257,7 +274,7 @@ UPLOADS:
 			},
 		)
 		if err != nil {
-			log.Println("[warn]", err)
+			logger.Println("[warn]", err)
 		}
 		return uploadsErr
 	}
@@ -269,7 +286,7 @@ UPLOADS:
 		return *c.parts[i].PartNumber < *c.parts[j].PartNumber
 	})
 
-	log.Printf("[info] complete multipart upload id %s", *mpu.UploadId)
+	logger.Printf("[info] complete multipart upload: %s id: %s", dest, *mpu.UploadId)
 	_, err = c.svc.CompleteMultipartUploadWithContext(
 		ctx,
 		&s3.CompleteMultipartUploadInput{
@@ -284,7 +301,7 @@ UPLOADS:
 
 func (c *Concatenator) uploadPartCopy(ctx context.Context, from, to *S3Object, start, end int64) error {
 	c.partNumber++
-	log.Printf("[debug] uploadPartCopy %s(%d-%d) -> %s (part %d)", from, start, end, to, c.partNumber)
+	logger.Printf("[debug] uploadPartCopy %s(%d-%d) -> %s (part %d)", from, start, end, to, c.partNumber)
 	input := &s3.UploadPartCopyInput{
 		Bucket:          aws.String(to.Bucket),
 		Key:             aws.String(to.Key),
@@ -295,16 +312,16 @@ func (c *Concatenator) uploadPartCopy(ctx context.Context, from, to *S3Object, s
 	}
 	res, err := c.svc.UploadPartCopyWithContext(ctx, input)
 	if err != nil {
-		return errors.Wrapf(err, "UploadPart failed: %s %s (part %d)", err, to, c.partNumber)
+		return errors.Wrapf(err, "uploadPartCopy failed: %s %s (part %d)", err, to, c.partNumber)
 	} else {
-		log.Printf("[info] UploadPartCopy completed: %s (part %d)", to, c.partNumber)
+		logger.Printf("[info] uploadPartCopy completed: %s (part %d)", to, c.partNumber)
 	}
 	return c.updateParts(*res.CopyPartResult.ETag)
 }
 
 func (c *Concatenator) uploadPart(ctx context.Context, b []byte, to *S3Object) error {
 	c.partNumber++
-	log.Printf("[debug] uploadPart %d bytes -> %s (part %d)", len(b), to, c.partNumber)
+	logger.Printf("[debug] uploadPart %d bytes -> %s (part %d)", len(b), to, c.partNumber)
 	input := &s3.UploadPartInput{
 		Body:       bytes.NewReader(b),
 		Bucket:     aws.String(to.Bucket),
@@ -314,15 +331,15 @@ func (c *Concatenator) uploadPart(ctx context.Context, b []byte, to *S3Object) e
 	}
 	res, err := c.svc.UploadPartWithContext(ctx, input)
 	if err != nil {
-		return errors.Wrapf(err, "UploadPart failed: %s %s (part%d)", err, to, c.partNumber)
+		return errors.Wrapf(err, "uploadPart failed: %s %s (part%d)", err, to, c.partNumber)
 	} else {
-		log.Printf("[info] UploadPart completed: %s (part %d)", to, c.partNumber)
+		logger.Printf("[info] uploadPart completed: %s (part %d)", to, c.partNumber)
 	}
 	return c.updateParts(*res.ETag)
 }
 
 func (c *Concatenator) getObjectContent(ctx context.Context, obj *S3Object, start, end int64) ([]byte, error) {
-	log.Printf("[debug] getObjectContent %s(%d-%d)", obj, start, end)
+	logger.Printf("[debug] getObjectContent %s(%d-%d)", obj, start, end)
 	input := &s3.GetObjectInput{
 		Bucket: aws.String(obj.Bucket),
 		Key:    aws.String(obj.Key),
