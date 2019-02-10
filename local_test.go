@@ -68,6 +68,10 @@ func init() {
 			Src:  []File{Files["foo/1234"], Files["bar/8888"]},
 			Dest: File{Key: "concat/foo_bar"},
 		},
+		Suite{
+			Src:  []File{Files["6MB"], Files["6MB"], Files["4MB"], Files["6MB"]},
+			Dest: File{Key: "concat/24MB"},
+		},
 	}
 }
 

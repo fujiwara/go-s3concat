@@ -150,6 +150,7 @@ func listObjects(ctx context.Context, svc *s3.S3, o *S3Object) ([]*S3Object, int
 
 func (c *Concatenator) Upload(ctx context.Context, src []*S3Object, dest *S3Object) error {
 	var size int64
+	logger.Printf("[info] starting concat %v to %s by get and put", src, dest)
 	for _, obj := range src {
 		size += obj.Size
 	}
@@ -183,7 +184,7 @@ func (c *Concatenator) updateParts(etag string) error {
 }
 
 func (c *Concatenator) Multipart(ctx context.Context, src []*S3Object, dest *S3Object) error {
-	logger.Printf("[debug] starting multipart upload to %s", dest)
+	logger.Printf("[info] starting concat %v to %s by multipart upload", src, dest)
 	mpu, err := c.svc.CreateMultipartUploadWithContext(
 		ctx,
 		&s3.CreateMultipartUploadInput{
