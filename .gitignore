@@ -12,3 +12,4 @@
 *.out
 *~
 .envrc
+cmd/s3concat/s3concat

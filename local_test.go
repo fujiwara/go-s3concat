@@ -21,8 +21,9 @@ import (
 var Bucket = aws.String("mytest")
 
 type File struct {
-	Key  string
-	Body []byte
+	Key      string
+	Body     []byte
+	IsPrefix bool
 }
 
 func (f File) Size() int64 {
@@ -30,54 +31,70 @@ func (f File) Size() int64 {
 }
 
 var Files = map[string]File{
-	"1MB":      File{"1MB", randomBody(1024 * 1024)},
-	"2MB":      File{"2MB", randomBody(2 * 1024 * 1024)},
-	"4MB":      File{"4MB", randomBody(4 * 1024 * 1024)},
-	"6MB":      File{"6MB", randomBody(6 * 1024 * 1024)},
-	"foo/9999": File{"foo/9999", randomBody(9999)},
-	"foo/1234": File{"foo/1234", randomBody(1234)},
-	"bar/8888": File{"bar/8888", randomBody(8888)},
+	"1MB":      File{Key: "1MB", Body: randomBody(1024 * 1024)},
+	"2MB":      File{Key: "2MB", Body: randomBody(2 * 1024 * 1024)},
+	"4MB":      File{Key: "4MB", Body: randomBody(4 * 1024 * 1024)},
+	"6MB":      File{Key: "6MB", Body: randomBody(6 * 1024 * 1024)},
+	"foo/9999": File{Key: "foo/9999", Body: randomBody(9999)},
+	"foo/1234": File{Key: "foo/1234", Body: randomBody(1234)},
+	"bar/8888": File{Key: "bar/8888", Body: randomBody(8888)},
+}
+
+type Suite struct {
+	Src    []File
+	Dest   File
+	Option *s3concat.Option
 }
 
 var Suites []Suite
 
 func init() {
-	foo := File{Key: "foo/"}
+	foo := File{Key: "foo/", IsPrefix: true}
 	foo.Body = append(foo.Body, Files["foo/1234"].Body...)
 	foo.Body = append(foo.Body, Files["foo/9999"].Body...)
 	Files["foo/"] = foo
 
+	foo1 := File{Key: "foo/1", IsPrefix: true}
+	foo1.Body = append(foo1.Body, Files["foo/1234"].Body...)
+	Files["foo/1"] = foo1
+
 	Suites = []Suite{
 		Suite{
-			Src:  []File{Files["1MB"], Files["2MB"], Files["4MB"], Files["6MB"]},
-			Dest: File{Key: "concat/13MB"},
+			Src:    []File{Files["1MB"], Files["2MB"], Files["4MB"], Files["6MB"]},
+			Dest:   File{Key: "concat/13MB"},
+			Option: &s3concat.Option{Recursive: false},
 		},
 		Suite{
-			Src:  []File{Files["1MB"], Files["foo/"], Files["2MB"], Files["4MB"], Files["6MB"], Files["bar/8888"]},
-			Dest: File{Key: "concat/13MB_foo_bar"},
+			Src:    []File{Files["1MB"], Files["foo/"], Files["2MB"], Files["4MB"], Files["6MB"], Files["bar/8888"]},
+			Dest:   File{Key: "concat/13MB_foo_bar"},
+			Option: &s3concat.Option{Recursive: true},
 		},
 		Suite{
-			Src:  []File{Files["foo/9999"], Files["foo/1234"]},
-			Dest: File{Key: "concat/9999_1234"},
+			Src:    []File{Files["foo/9999"], Files["foo/1234"]},
+			Dest:   File{Key: "concat/9999_1234"},
+			Option: &s3concat.Option{Recursive: false},
 		},
 		Suite{
-			Src:  []File{Files["foo/"]},
-			Dest: File{Key: "concat/recr_foo"},
+			Src:    []File{Files["foo/"]},
+			Dest:   File{Key: "concat/recr_foo"},
+			Option: &s3concat.Option{Recursive: true},
 		},
 		Suite{
-			Src:  []File{Files["foo/1234"], Files["bar/8888"]},
-			Dest: File{Key: "concat/foo_bar"},
+			Src:    []File{Files["foo/1"]},
+			Dest:   File{Key: "concat/foo_1234"},
+			Option: &s3concat.Option{Recursive: true},
 		},
 		Suite{
-			Src:  []File{Files["6MB"], Files["6MB"], Files["4MB"], Files["6MB"]},
-			Dest: File{Key: "concat/24MB"},
+			Src:    []File{Files["foo/1234"], Files["bar/8888"]},
+			Dest:   File{Key: "concat/foo_bar"},
+			Option: &s3concat.Option{Recursive: false},
+		},
+		Suite{
+			Src:    []File{Files["6MB"], Files["6MB"], Files["4MB"], Files["6MB"]},
+			Dest:   File{Key: "concat/24MB"},
+			Option: &s3concat.Option{Recursive: false},
 		},
 	}
-}
-
-type Suite struct {
-	Src  []File
-	Dest File
 }
 
 func (f File) String() string {
@@ -98,8 +115,8 @@ func TestMain(m *testing.M) {
 		Bucket: Bucket,
 	})
 	for _, f := range Files {
-		if strings.HasSuffix(f.Key, "/") {
-			continue // dir
+		if f.IsPrefix {
+			continue
 		}
 		log.Printf("putting %s %d bytes", f.Key, f.Size())
 		_, err := svc.PutObject(&s3.PutObjectInput{
@@ -161,7 +178,7 @@ func TestLocalStack(t *testing.T) {
 			srcBody = append(srcBody, f.Body...)
 		}
 
-		err := s3concat.Concat(sess, src, s.Dest.String())
+		err := s3concat.Concat(sess, src, s.Dest.String(), s.Option)
 		if err != nil {
 			t.Error(err)
 			continue

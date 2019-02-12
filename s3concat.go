@@ -49,6 +49,10 @@ func ParseS3URL(str string) (*S3Object, error) {
 	}, nil
 }
 
+type Option struct {
+	Recursive bool
+}
+
 type Concatenator struct {
 	svc        *s3.S3
 	uploadID   string
@@ -69,11 +73,11 @@ func init() {
 	logger.SetOutput(filter)
 }
 
-func Concat(sess *session.Session, srcs []string, dst string) error {
-	return ConcatWithContext(context.Background(), sess, srcs, dst)
+func Concat(sess *session.Session, srcs []string, dst string, opt *Option) error {
+	return ConcatWithContext(context.Background(), sess, srcs, dst, opt)
 }
 
-func ConcatWithContext(ctx context.Context, sess *session.Session, srcs []string, dst string) error {
+func ConcatWithContext(ctx context.Context, sess *session.Session, srcs []string, dst string, opt *Option) error {
 	svc := s3.New(sess)
 	dstObj, err := ParseS3URL(dst)
 	if err != nil {
@@ -90,7 +94,7 @@ func ConcatWithContext(ctx context.Context, sess *session.Session, srcs []string
 		if err != nil {
 			return err
 		}
-		ls, size, err := listObjects(ctx, svc, srcObject)
+		ls, size, err := listObjects(ctx, svc, srcObject, opt)
 		if err != nil {
 			return err
 		}
@@ -116,13 +120,13 @@ func ConcatWithContext(ctx context.Context, sess *session.Session, srcs []string
 	}
 }
 
-func listObjects(ctx context.Context, svc *s3.S3, o *S3Object) ([]*S3Object, int64, error) {
-	logger.Printf("[debug] listObjects %s", o)
+func listObjects(ctx context.Context, svc *s3.S3, obj *S3Object, opt *Option) ([]*S3Object, int64, error) {
+	logger.Printf("[debug] listObjects %s", obj)
 	res, err := svc.ListObjectsWithContext(
 		ctx,
 		&s3.ListObjectsInput{
-			Bucket:  aws.String(o.Bucket),
-			Prefix:  aws.String(o.Key),
+			Bucket:  aws.String(obj.Bucket),
+			Prefix:  aws.String(obj.Key),
 			MaxKeys: aws.Int64(MaxObjects + 1),
 		},
 	)
@@ -136,8 +140,11 @@ func listObjects(ctx context.Context, svc *s3.S3, o *S3Object) ([]*S3Object, int
 	var totalSize int64
 	objs := make([]*S3Object, 0, len(res.Contents))
 	for _, c := range res.Contents {
+		if !opt.Recursive && *c.Key != obj.Key {
+			continue
+		}
 		so := &S3Object{
-			Bucket: o.Bucket,
+			Bucket: obj.Bucket,
 			Key:    *c.Key,
 			Size:   *c.Size,
 		}
